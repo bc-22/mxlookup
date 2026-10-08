@@ -19,8 +19,3 @@ Paste or upload up to 1,000 domains and check their MX records. Runs entirely on
 
 ## Protect it
 The endpoint is public. To stop others using your quota, add Vercel Password Protection / Deployment Protection, or put an API key check in `api/mx.js`.
-
-## TLS check
-Tick **Check TLS** to test the primary (lowest priority) MX of each domain with a real STARTTLS handshake on port 25, plus an MTA-STS lookup (DNS TXT and policy file over HTTPS).
-
-Caveat: Vercel runs on AWS Lambda, which commonly blocks or throttles outbound port 25. If so, STARTTLS shows as "Unreachable" while MTA-STS still works. To get reliable STARTTLS results, run `probeStartTls` from a host that allows outbound SMTP (a small VPS, Fly.io, Railway, etc.).

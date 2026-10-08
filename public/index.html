@@ -59,8 +59,6 @@
   td.mx div { white-space:nowrap; }
   td.mx span { color:var(--muted); margin-right:6px; }
   .tag { font-weight:600; font-size:13px; }
-  table.notls .tlsc { display:none; }
-  td.tlsc .note { font-size:12px; line-height:1.4; }
   .tag.ok { color:var(--ok); } .tag.none { color:var(--warn); } .tag.nxdomain, .tag.error, .tag.invalid { color:var(--bad); }
 </style>
 </head>
@@ -77,7 +75,6 @@
       <label class="btn" for="file">Upload .txt or .csv</label>
       <input id="file" type="file" accept=".txt,.csv,text/plain,text/csv">
       <button id="clear">Clear</button>
-      <label class="note"><input type="checkbox" id="tls"> Check TLS (STARTTLS and MTA-STS, slower)</label>
       <span class="grow"></span>
       <span id="count" class="note">0 domains</span>
     </div>
@@ -102,7 +99,6 @@
         <option value="ok">Has MX</option>
         <option value="none">No MX</option>
         <option value="bad">Missing, invalid or failed</option>
-        <option value="notls">TLS not confirmed</option>
       </select>
       <span class="grow"></span>
       <button id="retry" style="display:none">Retry failed</button>
@@ -110,8 +106,8 @@
       <button id="csv">Download CSV</button>
     </div>
     <div class="tablewrap">
-      <table id="tbl" class="notls">
-        <thead><tr><th>Domain</th><th>Status</th><th>MX records (priority, host)</th><th>Provider</th><th class="tlsc">TLS on primary MX</th></tr></thead>
+      <table>
+        <thead><tr><th>Domain</th><th>Status</th><th>MX records (priority, host)</th><th>Provider</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -122,14 +118,13 @@
 (() => {
   const LIMIT = 1000;   // max domains per run
   const BATCH = 25;     // domains per API request
-  const BATCH_TLS = 10; // smaller batches when TLS probing is on
   const PARALLEL = 4;   // concurrent API requests
   const $ = (id) => document.getElementById(id);
   const LABEL = { ok:'Has MX', none:'No MX', nxdomain:'No such domain', invalid:'Invalid', error:'Lookup failed' };
 
   let results = new Map();   // domain -> result
   let order = [];
-  let aborted = false, running = false, tlsOn = false;
+  let aborted = false, running = false;
 
   function parse(text) {
     const seen = new Set(), out = [];
@@ -161,18 +156,6 @@
     $('retry').style.display = [...results.values()].some((r) => r.status === 'error') && !running ? '' : 'none';
   }
 
-  const TLS_LABEL = { ok:'STARTTLS supported', no_starttls:'No STARTTLS', unreachable:'Unreachable', tls_failed:'Handshake failed' };
-  const STS_LABEL = { missing:'not set', enforce:'enforce', testing:'testing', none:'mode none', invalid:'invalid policy' };
-  function tlsCell(r) {
-    const t = r.tls; if (!t) return '';
-    const cls = t.state === 'ok' ? 'ok' : (t.state === 'unreachable' ? 'none' : 'error');
-    const d = [];
-    if (t.state === 'ok') d.push(t.version + (t.certValid ? ', trusted cert' : ', cert not trusted'));
-    else if (t.error) d.push(t.error);
-    d.push('MTA-STS: ' + (STS_LABEL[t.mtaSts] || t.mtaSts));
-    return `<span class="tag ${cls}">${TLS_LABEL[t.state] || t.state}</span><div class="note">${d.map(esc).join('<br>')}</div><div class="note">${esc(t.host)}</div>`;
-  }
-
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
   function render() {
@@ -180,17 +163,15 @@
     const html = [];
     for (const d of order) {
       const r = results.get(d); if (!r) continue;
-      if (f === 'notls' ? !(r.tls && r.tls.state !== 'ok') : f === 'bad' ? !isBad(r) : f && r.status !== f) continue;
+      if (f === 'bad' ? !isBad(r) : f && r.status !== f) continue;
       const hay = (r.domain + ' ' + r.provider + ' ' + r.records.map((x) => x.exchange).join(' ')).toLowerCase();
       if (q && !hay.includes(q)) continue;
-      const tc = tlsOn ? `<td class="tlsc">${tlsCell(r)}</td>` : '';
       const mx = r.records.length
         ? r.records.map((x) => `<div><span>${x.priority}</span>${esc(x.exchange)}</div>`).join('')
         : `<span class="note">${esc(r.error)}</span>`;
-      html.push(`<tr><td class="d">${esc(r.domain)}</td><td><span class="tag ${r.status}">${LABEL[r.status]}</span></td><td class="mx">${mx}</td><td>${esc(r.provider)}</td>${tc}</tr>`);
+      html.push(`<tr><td class="d">${esc(r.domain)}</td><td><span class="tag ${r.status}">${LABEL[r.status]}</span></td><td class="mx">${mx}</td><td>${esc(r.provider)}</td></tr>`);
     }
-    $('tbl').classList.toggle('notls', !tlsOn);
-    $('rows').innerHTML = html.join('') || '<tr><td colspan="5" class="note">No results match.</td></tr>';
+    $('rows').innerHTML = html.join('') || '<tr><td colspan="4" class="note">No results match.</td></tr>';
   }
 
   let renderTimer;
@@ -200,7 +181,7 @@
     try {
       const res = await fetch('/api/mx', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domains: batch, tls: tlsOn }),
+        body: JSON.stringify({ domains: batch }),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return (await res.json()).results;
@@ -211,7 +192,7 @@
   }
 
   async function run(domains, fresh) {
-    running = true; aborted = false; tlsOn = $('tls').checked;
+    running = true; aborted = false;
     $('go').disabled = true; $('stop').disabled = false;
     $('progress').style.display = 'block'; $('results').style.display = 'block';
     if (fresh) { results = new Map(); order = domains.slice(); }
@@ -219,7 +200,7 @@
     updateStats(); render();
 
     const batches = [];
-    for (let i = 0; i < domains.length; i += (tlsOn ? BATCH_TLS : BATCH)) batches.push(domains.slice(i, i + (tlsOn ? BATCH_TLS : BATCH)));
+    for (let i = 0; i < domains.length; i += BATCH) batches.push(domains.slice(i, i + BATCH));
     let next = 0;
     async function worker() {
       while (!aborted && next < batches.length) {
@@ -234,14 +215,6 @@
     $('go').disabled = false; $('stop').disabled = true;
     $('msg').textContent = aborted ? `Stopped after ${results.size} of ${order.length}.` : 'Done.';
     $('msg').className = 'note';
-    if (tlsOn) {
-      const probed = [...results.values()].filter((r) => r.tls);
-      const dead = probed.filter((r) => r.tls.state === 'unreachable').length;
-      if (probed.length >= 5 && dead / probed.length > 0.8) {
-        $('msg').textContent += ' Most mail servers were unreachable on port 25. Your host may block outbound SMTP, so STARTTLS results are unreliable (MTA-STS results are still valid).';
-        $('msg').className = 'note warn';
-      }
-    }
     updateStats(); render();
   }
 
@@ -273,12 +246,10 @@
 
   $('csv').onclick = () => {
     const q = (s) => '"' + String(s).replace(/"/g, '""') + '"';
-    const lines = ['domain,status,provider,mx_records,error' + (tlsOn ? ',tls_host,starttls,tls_version,cert_trusted,tls_error,mta_sts' : '')];
+    const lines = ['domain,status,provider,mx_records,error'];
     for (const d of order) {
       const r = results.get(d); if (!r) continue;
-      lines.push([q(r.domain), q(LABEL[r.status]), q(r.provider), q(r.records.map((x) => `${x.priority} ${x.exchange}`).join('; ')), q(r.error)]
-        .concat(tlsOn ? (r.tls ? [q(r.tls.host), q(TLS_LABEL[r.tls.state] || r.tls.state), q(r.tls.version || ''), q(r.tls.state === 'ok' ? (r.tls.certValid ? 'yes' : 'no') : ''), q(r.tls.error || r.tls.certError || ''), q(r.tls.mtaSts)] : Array(6).fill('""')) : [])
-        .join(','));
+      lines.push([q(r.domain), q(LABEL[r.status]), q(r.provider), q(r.records.map((x) => `${x.priority} ${x.exchange}`).join('; ')), q(r.error)].join(','));
     }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));

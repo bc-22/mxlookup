@@ -1,8 +1,6 @@
 // POST /api/mx  { "domains": ["example.com", ...] }  (max 50 per request)
 // The browser splits big lists (up to 1000) into batches and calls this repeatedly.
 const dns = require('node:dns').promises;
-const net = require('node:net');
-const tls = require('node:tls');
 
 const MAX_PER_REQUEST = 50;
 const DOMAIN_RE = /^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z]{2,63}$/i;
@@ -32,76 +30,7 @@ function detectProvider(hosts) {
   return '';
 }
 
-
-// Connect to the MX host on port 25, issue EHLO, and see whether STARTTLS is offered and completes.
-function probeStartTls(host, port = 25, timeoutMs = 8000) {
-  return new Promise((resolve) => {
-    let settled = false, buf = '', stage = 'banner';
-    const sock = net.connect({ host, port });
-    const timer = setTimeout(() => done({ state: 'unreachable', error: 'Timed out' }), timeoutMs);
-    function done(r) {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      try { sock.destroy(); } catch {}
-      resolve(r);
-    }
-    sock.setEncoding('utf8');
-    sock.on('error', (e) => done({ state: 'unreachable', error: e.code || e.message }));
-    sock.on('close', () => done({ state: 'unreachable', error: 'Connection closed' }));
-    sock.on('data', (chunk) => {
-      if (stage === 'tls') return;
-      buf += chunk;
-      const lines = buf.split(/\r?\n/);
-      if (lines[lines.length - 1] !== '') return;                 // wait for a full line
-      const last = lines[lines.length - 2] || '';
-      if (!/^\d{3}( |$)/.test(last)) return;                      // multi-line reply not finished
-      const code = parseInt(last.slice(0, 3), 10), reply = buf;
-      buf = '';
-      if (stage === 'banner') {
-        if (code !== 220) return done({ state: 'unreachable', error: 'Bad banner ' + code });
-        stage = 'ehlo'; sock.write('EHLO mx-checker.example\r\n');
-      } else if (stage === 'ehlo') {
-        if (code !== 250) return done({ state: 'unreachable', error: 'EHLO rejected ' + code });
-        if (!/^250[ -]STARTTLS\s*$/im.test(reply)) return done({ state: 'no_starttls' });
-        stage = 'starttls'; sock.write('STARTTLS\r\n');
-      } else if (stage === 'starttls') {
-        if (code !== 220) return done({ state: 'no_starttls', error: 'STARTTLS rejected ' + code });
-        stage = 'tls';
-        sock.removeAllListeners('data');
-        const t = tls.connect({ socket: sock, servername: host, rejectUnauthorized: false });
-        t.once('secureConnect', () => done({
-          state: 'ok',
-          version: t.getProtocol() || '',
-          certValid: t.authorized,
-          certError: t.authorized ? '' : String(t.authorizationError || ''),
-        }));
-        t.once('error', (e) => done({ state: 'tls_failed', error: e.code || e.message }));
-      }
-    });
-  });
-}
-
-// MTA-STS: DNS TXT record plus policy file over HTTPS (port 443, so it works on Vercel).
-async function checkMtaSts(domain, resolver) {
-  try {
-    const txt = await resolver.resolveTxt('_mta-sts.' + domain);
-    if (!txt.some((r) => r.join('').toLowerCase().startsWith('v=stsv1'))) return 'missing';
-  } catch { return 'missing'; }
-  try {
-    const res = await fetch(`https://mta-sts.${domain}/.well-known/mta-sts.txt`, { redirect: 'manual', signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return 'invalid';
-    const m = /^mode:\s*(\w+)/im.exec(await res.text());
-    return m ? m[1].toLowerCase() : 'invalid';
-  } catch { return 'invalid'; }
-}
-
-async function checkTls(records, domain, resolver) {
-  const host = records[0].exchange;   // primary (lowest priority) MX
-  const [probe, mtaSts] = await Promise.all([probeStartTls(host), checkMtaSts(domain, resolver)]);
-  return { host, ...probe, mtaSts };
-}
-
-async function check(domain, resolver, opts = {}) {
+async function check(domain, resolver) {
   if (!DOMAIN_RE.test(domain)) return { domain, status: 'invalid', records: [], provider: '', error: 'Not a valid domain' };
   try {
     const raw = await resolver.resolveMx(domain);
@@ -111,9 +40,7 @@ async function check(domain, resolver, opts = {}) {
     if (!records.length || (records.length === 1 && records[0].exchange === '')) {
       return { domain, status: 'none', records: [], provider: '', error: 'Null MX (domain does not accept mail)' };
     }
-    const out = { domain, status: 'ok', records, provider: detectProvider(records.map((r) => r.exchange)), error: '' };
-    if (opts.tls) out.tls = await checkTls(records, domain, resolver);
-    return out;
+    return { domain, status: 'ok', records, provider: detectProvider(records.map((r) => r.exchange)), error: '' };
   } catch (e) {
     if (e.code === 'ENODATA') return { domain, status: 'none', records: [], provider: '', error: 'No MX records' };
     if (e.code === 'ENOTFOUND') return { domain, status: 'nxdomain', records: [], provider: '', error: 'Domain does not exist' };
@@ -133,6 +60,6 @@ module.exports = async (req, res) => {
 
   const resolver = new dns.Resolver({ timeout: 3000, tries: 2 });
   const domains = list.map((d) => String(d).trim().toLowerCase());
-  const results = await Promise.all(domains.map((d) => check(d, resolver, { tls: !!(body && body.tls) })));
+  const results = await Promise.all(domains.map((d) => check(d, resolver)));
   res.status(200).json({ results });
 };
