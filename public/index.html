@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MX Bulk Checker</title>
+<style>
+  :root {
+    --bg:#f6f7f4; --panel:#ffffff; --ink:#1b2320; --muted:#63706a; --line:#dde2dc;
+    --accent:#1f6f5c; --accent-ink:#ffffff; --ok:#1f7a4d; --warn:#9a6a00; --bad:#b3372c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#121715; --panel:#1a211e; --ink:#e7ece9; --muted:#8b9892; --line:#2b3531;
+      --accent:#4fb99a; --accent-ink:#0d1512; --ok:#5fcb92; --warn:#e0b04a; --bad:#ef7b6f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; }
+  body { background:var(--bg); color:var(--ink); font:15px/1.5 var(--sans); }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 24px; max-width: 60ch; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  textarea {
+    width:100%; min-height:180px; resize:vertical; background:transparent; color:var(--ink);
+    border:1px solid var(--line); border-radius:6px; padding:12px; font:13px/1.6 var(--mono);
+  }
+  textarea:focus, button:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
+  .grow { flex:1; }
+  button, .btn {
+    font:inherit; font-weight:600; padding:9px 16px; border-radius:6px; cursor:pointer;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+  }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input[type=file] { display:none; }
+  .note { color:var(--muted); font-size:13px; }
+  .note.warn { color:var(--warn); }
+  #progress { margin-top:20px; display:none; }
+  .bar { height:8px; background:var(--line); border-radius:99px; overflow:hidden; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .2s; }
+  .stats { display:flex; flex-wrap:wrap; gap:18px; margin-top:10px; font-size:14px; }
+  .stats b { font-variant-numeric: tabular-nums; }
+  #results { margin-top:24px; display:none; }
+  .tools input[type=search], .tools select {
+    font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink);
+  }
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; margin-top:12px; background:var(--panel); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-weight:600; color:var(--muted); font-size:13px; white-space:nowrap; }
+  tr:last-child td { border-bottom:0; }
+  td.d { font-family:var(--mono); font-size:13px; white-space:nowrap; }
+  td.mx { font-family:var(--mono); font-size:12.5px; }
+  td.mx div { white-space:nowrap; }
+  td.mx span { color:var(--muted); margin-right:6px; }
+  .tag { font-weight:600; font-size:13px; }
+  .tag.ok { color:var(--ok); } .tag.none { color:var(--warn); } .tag.nxdomain, .tag.error, .tag.invalid { color:var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>MX Bulk Checker</h1>
+  <p class="sub">Paste up to 1,000 domains, one per line or separated by commas. Large lists are checked in batches, so you can watch results arrive.</p>
+
+  <section class="panel">
+    <textarea id="input" placeholder="example.com&#10;github.com&#10;anthropic.com" spellcheck="false" aria-label="Domains to check"></textarea>
+    <div class="row">
+      <button id="go" class="primary">Check MX records</button>
+      <button id="stop" disabled>Stop</button>
+      <label class="btn" for="file">Upload .txt or .csv</label>
+      <input id="file" type="file" accept=".txt,.csv,text/plain,text/csv">
+      <button id="clear">Clear</button>
+      <span class="grow"></span>
+      <span id="count" class="note">0 domains</span>
+    </div>
+    <p id="msg" class="note" style="margin:10px 0 0"></p>
+  </section>
+
+  <section id="progress">
+    <div class="bar"><i id="fill"></i></div>
+    <div class="stats">
+      <span><b id="done">0</b> / <b id="total">0</b> checked</span>
+      <span style="color:var(--ok)"><b id="sOk">0</b> with MX</span>
+      <span style="color:var(--warn)"><b id="sNone">0</b> no MX</span>
+      <span style="color:var(--bad)"><b id="sBad">0</b> missing or failed</span>
+    </div>
+  </section>
+
+  <section id="results">
+    <div class="row tools" style="margin-top:0">
+      <input id="filter" type="search" placeholder="Filter domains or hosts" aria-label="Filter results">
+      <select id="status" aria-label="Filter by status">
+        <option value="">All results</option>
+        <option value="ok">Has MX</option>
+        <option value="none">No MX</option>
+        <option value="bad">Missing, invalid or failed</option>
+      </select>
+      <span class="grow"></span>
+      <button id="retry" style="display:none">Retry failed</button>
+      <button id="copy">Copy domains with MX</button>
+      <button id="csv">Download CSV</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Domain</th><th>Status</th><th>MX records (priority, host)</th><th>Provider</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const LIMIT = 1000;   // max domains per run
+  const BATCH = 25;     // domains per API request
+  const PARALLEL = 4;   // concurrent API requests
+  const $ = (id) => document.getElementById(id);
+  const LABEL = { ok:'Has MX', none:'No MX', nxdomain:'No such domain', invalid:'Invalid', error:'Lookup failed' };
+
+  let results = new Map();   // domain -> result
+  let order = [];
+  let aborted = false, running = false;
+
+  function parse(text) {
+    const seen = new Set(), out = [];
+    for (let tok of text.split(/[\s,;]+/)) {
+      tok = tok.trim().toLowerCase()
+        .replace(/^[a-z]+:\/\//, '').replace(/^.*@/, '').replace(/^www\./, '')
+        .replace(/[\/?#:].*$/, '').replace(/\.$/, '').replace(/^["']|["']$/g, '');
+      if (!tok || seen.has(tok)) continue;
+      seen.add(tok); out.push(tok);
+    }
+    return out;
+  }
+
+  function refreshCount() {
+    const n = parse($('input').value).length;
+    $('count').textContent = n.toLocaleString() + (n === 1 ? ' domain' : ' domains');
+    const over = n > LIMIT;
+    $('msg').textContent = over ? `Only the first ${LIMIT.toLocaleString()} will be checked.` : '';
+    $('msg').className = 'note' + (over ? ' warn' : '');
+  }
+
+  function isBad(r) { return r.status === 'nxdomain' || r.status === 'invalid' || r.status === 'error'; }
+
+  function updateStats() {
+    let ok = 0, none = 0, bad = 0;
+    for (const r of results.values()) { if (r.status === 'ok') ok++; else if (r.status === 'none') none++; else bad++; }
+    $('done').textContent = results.size; $('sOk').textContent = ok; $('sNone').textContent = none; $('sBad').textContent = bad;
+    $('fill').style.width = (order.length ? results.size / order.length * 100 : 0) + '%';
+    $('retry').style.display = [...results.values()].some((r) => r.status === 'error') && !running ? '' : 'none';
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  function render() {
+    const q = $('filter').value.trim().toLowerCase(), f = $('status').value;
+    const html = [];
+    for (const d of order) {
+      const r = results.get(d); if (!r) continue;
+      if (f === 'bad' ? !isBad(r) : f && r.status !== f) continue;
+      const hay = (r.domain + ' ' + r.provider + ' ' + r.records.map((x) => x.exchange).join(' ')).toLowerCase();
+      if (q && !hay.includes(q)) continue;
+      const mx = r.records.length
+        ? r.records.map((x) => `<div><span>${x.priority}</span>${esc(x.exchange)}</div>`).join('')
+        : `<span class="note">${esc(r.error)}</span>`;
+      html.push(`<tr><td class="d">${esc(r.domain)}</td><td><span class="tag ${r.status}">${LABEL[r.status]}</span></td><td class="mx">${mx}</td><td>${esc(r.provider)}</td></tr>`);
+    }
+    $('rows').innerHTML = html.join('') || '<tr><td colspan="4" class="note">No results match.</td></tr>';
+  }
+
+  let renderTimer;
+  function scheduleRender() { clearTimeout(renderTimer); renderTimer = setTimeout(render, 150); }
+
+  async function fetchBatch(batch, attempt = 0) {
+    try {
+      const res = await fetch('/api/mx', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domains: batch }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return (await res.json()).results;
+    } catch (e) {
+      if (attempt < 2 && !aborted) { await new Promise((r) => setTimeout(r, 800 * (attempt + 1))); return fetchBatch(batch, attempt + 1); }
+      return batch.map((domain) => ({ domain, status: 'error', records: [], provider: '', error: 'Request failed' }));
+    }
+  }
+
+  async function run(domains, fresh) {
+    running = true; aborted = false;
+    $('go').disabled = true; $('stop').disabled = false;
+    $('progress').style.display = 'block'; $('results').style.display = 'block';
+    if (fresh) { results = new Map(); order = domains.slice(); }
+    $('total').textContent = order.length;
+    updateStats(); render();
+
+    const batches = [];
+    for (let i = 0; i < domains.length; i += BATCH) batches.push(domains.slice(i, i + BATCH));
+    let next = 0;
+    async function worker() {
+      while (!aborted && next < batches.length) {
+        const rs = await fetchBatch(batches[next++]);
+        for (const r of rs) results.set(r.domain, r);
+        updateStats(); scheduleRender();
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, batches.length) }, worker));
+
+    running = false;
+    $('go').disabled = false; $('stop').disabled = true;
+    $('msg').textContent = aborted ? `Stopped after ${results.size} of ${order.length}.` : 'Done.';
+    $('msg').className = 'note';
+    updateStats(); render();
+  }
+
+  $('go').onclick = () => {
+    const all = parse($('input').value);
+    if (!all.length) { $('msg').textContent = 'Add at least one domain.'; $('msg').className = 'note warn'; return; }
+    run(all.slice(0, LIMIT), true);
+  };
+  $('stop').onclick = () => { aborted = true; };
+  $('retry').onclick = () => {
+    const failed = [...results.values()].filter((r) => r.status === 'error').map((r) => r.domain);
+    failed.forEach((d) => results.delete(d));
+    run(failed, false);
+  };
+  $('clear').onclick = () => { $('input').value = ''; refreshCount(); };
+  $('input').addEventListener('input', refreshCount);
+  $('filter').addEventListener('input', render);
+  $('status').addEventListener('change', render);
+  $('file').addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    $('input').value = await f.text(); e.target.value = ''; refreshCount();
+  });
+
+  $('copy').onclick = async () => {
+    const list = order.filter((d) => results.get(d)?.status === 'ok').join('\n');
+    try { await navigator.clipboard.writeText(list); $('msg').textContent = 'Copied domains with MX records.'; }
+    catch { $('msg').textContent = 'Copy failed. Use the CSV download instead.'; }
+  };
+
+  $('csv').onclick = () => {
+    const q = (s) => '"' + String(s).replace(/"/g, '""') + '"';
+    const lines = ['domain,status,provider,mx_records,error'];
+    for (const d of order) {
+      const r = results.get(d); if (!r) continue;
+      lines.push([q(r.domain), q(LABEL[r.status]), q(r.provider), q(r.records.map((x) => `${x.priority} ${x.exchange}`).join('; ')), q(r.error)].join(','));
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+    a.download = 'mx-results.csv'; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  refreshCount();
+})();
+</script>
+</body>
+</html>
